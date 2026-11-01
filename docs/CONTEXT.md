@@ -5,9 +5,10 @@ whole project and make decisions: data, statistics, methods, results, papers, an
 versions. Keep it current.
 
 - **Last updated:** 2026-11-01
-- **Repo state:** clean rewrite complete; experiments verified offline (7/7 method
-  checks); PCA now fit on controls only (leakage fix, see §4); **full-scale runs not
-  yet executed**; nothing committed yet.
+- **Repo state:** clean rewrite complete; experiments verified offline (8/8 method
+  checks); PCA fit on a reserved reference half of the controls (§4); calibration run
+  at 50 draws and PCA-vs-gene-space compared (§7a–b); **full-scale runs not yet
+  executed**.
 - **How to maintain:** when data, parameters, methods, results, or versions change,
   update the relevant section *and* add a dated line to the Changelog at the bottom.
   Numbers here must come from a real run — cite the file they came from.
@@ -26,8 +27,9 @@ A significant diagram difference is **exploratory** evidence, not a validated lo
 
 ```
 topoperturb/   package: data, distances, homology, twosample, features, plotting
-experiments/   01_prepare_data, 02_synthetic, 03_real, 04_calibration, verify_methods, config
-docs/          DATA.md, METHODS.md, CONTEXT.md (this file)
+experiments/   01_prepare_data, 02_synthetic, 03_real, 04_calibration,
+               05_compare_spaces, verify_methods, config
+docs/          DATA.md, METHODS.md, CONTEXT.md (this file), UPDATE_REPORT.md
 results/       tables + figures (per experiment)
 data/          cache/ (HF downloads), k562/, rpe1/ (prepared clouds) — all gitignored
 archive/       earlier pipeline + recovered caches (NOT used by current code)
@@ -164,6 +166,7 @@ rejected **2/40 (~5%)**.
 | `02_synthetic` | 40 reps × 12 conditions | `results/synthetic.{csv,png}`, `synthetic_draws.csv` |
 | `03_real` | 15 draws × 15 groups | `results/real.{csv,png}`, `real_draws.csv`, `real_features.csv`, `diagrams/` |
 | `04_calibration` | 200 draws × {75,100,150} | `results/calibration.{csv,png}`, `calibration_draws.csv` |
+| `05_compare_spaces` | 5 draws × 3 groups × 2 spaces | `results/space_comparison.csv`, `space_diagnostics.csv` |
 
 Synthetic conditions: null, translation, scaling, anisotropy, heavy_tails, partial_kd
 (mixture), ring, bimodal, ring_noise_{0.1,0.2,0.3,0.5}.
@@ -178,7 +181,49 @@ and tags its outputs (`clouds_50pc.npz`, `calibration_50pc.csv`, …).
 
 ## 7. Results
 
-**Status: full-scale runs PENDING.** Only small verification/smoke runs executed so far.
+**Status: full-scale runs PENDING.** Only small verification/method-decision runs
+executed so far. Full audit write-up: [`docs/UPDATE_REPORT.md`](UPDATE_REPORT.md).
+
+### 7a. Calibration on the revised representation (`results/calibration.csv`)
+
+`04_calibration --draws 50` on the reference-fit 30-PC clouds, drawing only from the
+testing controls. 36 rows (2 lines × 3 sizes × 6 methods):
+
+- false-positive rate at p < 0.05: **mean 0.041**, range 0.000–0.120;
+- **1/36** rows with a Wilson interval excluding 0.05 from above (energy, RPE1, n=75);
+- per-method mean FPR: covariance 0.037, diffusion_H1 0.040, effres_H1 0.033,
+  energy 0.063, euclidean_H0 0.040, euclidean_H1 0.033;
+- p-value uniformity: **2/36** KS tests below 0.05, i.e. chance level (~1.8 expected).
+
+No method shows false-positive inflation. **Caveat:** 50 draws resolve a 5% rate only
+to ±~6 points and the draws share one control pool (Wilson intervals are lower
+bounds), so this says "not visibly broken", not "calibrated". Quote the 200-draw run.
+
+### 7b. Is PCA the right input space? (`results/space_{comparison,diagnostics}.csv`)
+
+`05_compare_spaces --draws 5`: identical cells, permutations and methods in 30-PC
+space vs raw gene space (622/383 genes). PCA is optional for the method — everything
+after step 1 is dimension-agnostic — so this is a drop-in substitution.
+
+| | 30 PCs | genes |
+|---|---|---|
+| distance concentration (std/mean of pairwise distances; higher = more contrast) | **0.291** / **0.224** | 0.136 / 0.108 |
+| k needed to connect the kNN graph | 15 | 15 |
+| seconds per draw (K562 / RPE1) | **12.8 / 10.8** | 20.1 / 14.3 |
+
+(K562 / RPE1 in each cell.) The 15-NN sets agree only 24% (K562) and 40% (RPE1)
+between the spaces, so PCA genuinely changes the graph the homology is built on.
+Nulls stay ≤0.2 in both spaces; covariance is markedly more sensitive on K562 in PC
+space (1.0 vs 0.2–0.4 of draws). One point against PCA: RPE1 POLRMT fires for energy
+in 4/5 gene-space draws and 0/5 PC draws — at 5 draws, a hint, not a finding. The PH
+features fire too rarely in both spaces at this scale to separate them.
+
+**Decision: keep 30 PCs (reference-fit) as primary**, on distance contrast, runtime
+and the absence of null inflation; gene space is retained as a sensitivity baseline.
+Leading-H1 lifetimes differ a lot between spaces (K562 control 0.119 vs 0.011), so
+always report the space alongside a loop readout.
+
+### 7c. Earlier smoke observations
 
 Observed in smoke runs (not final — low replicate counts, and these were run on the
 **old balanced-fit PCA**, so even as smoke signals they must be re-run on the
@@ -212,10 +257,16 @@ huggingface_hub (latest); networkx (verify-only). Pinned in `pyproject.toml`.
 
 ## 10. Open decisions / TODO
 
-- [ ] Run full-scale `02/03/04` on the controls-fit clouds; fill §7 with final numbers
+- [ ] `04_calibration --draws 200` — the quotable calibration numbers (50-draw run in
+      §7a is preliminary). Then `--n-pcs 20` and `--n-pcs 50` for stability.
+- [ ] Run full-scale `02/03` on the reference-fit clouds; fill §7 with final numbers
       + figures (the old smoke observations do not carry over).
+- [ ] `05_compare_spaces --draws 25` — is the RPE1 POLRMT gene-space/PCA gap real?
+- [ ] Close the Damrich et al. gap: side-by-side against the authors' reference
+      implementation, and re-check their `t`/`k` defaults and input space against the
+      paper (our checks are against independent definitions, not their code).
 - [ ] Report the `fit="balanced"` (and `drop_genes`) runs as an explicit representation
-      sensitivity check alongside the controls-fit primary analysis.
+      sensitivity check alongside the reference-fit primary analysis.
 - [ ] Fetch canonical data from Hugging Face (step 1 without `--cache`) and confirm
       clouds match the offline-cache clouds.
 - [ ] Decide whether to add a modest novel method (currently: referenced methods only).
@@ -240,3 +291,16 @@ huggingface_hub (latest); networkx (verify-only). Pinned in `pyproject.toml`.
   making its Wilson interval a lower bound. (5) `01_prepare_data --cache` takes a
   `{cell_line}` placeholder so both lines (and thus the cross-line summary) come from
   one run. Full-scale runs still pending; §7 smoke observations predate the PCA change.
+- **2026-11-01** — PCA independence, representation audit, first calibration
+  (`docs/UPDATE_REPORT.md`). (1) **`fit="controls"` → `fit="reference"`**: half the
+  controls are reserved to fit the axes and excluded from all testing
+  (`data.reference_split`, `data.testing_controls`, `pca_reference` mask in the
+  clouds), so no cell both defines and is judged in the space; verified by an 8th
+  check in `verify_methods.py`. §4 stats regenerated. (2) **20/30/50-PC clouds**
+  prepared (`--n-pcs`, tagged outputs); 30 PCs sits on a plateau — spectrum flattens
+  after ~PC 10, participation ratio grows linearly, centroid shift unchanged. (3)
+  **Calibration run** (50 draws) on the revised representation: mean FPR 0.041,
+  uniformity failures at chance level — §7a. (4) **New `05_compare_spaces`**: 30 PCs
+  vs raw gene space on identical cells/permutations; PCA kept as primary on distance
+  contrast (~2×), runtime (~1.4×) and no null inflation — §7b. Still pending: 200-draw
+  calibration, full `02`/`03`, and a side-by-side against the Damrich et al. code.

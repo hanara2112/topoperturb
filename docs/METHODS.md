@@ -73,4 +73,16 @@ Because the representation and the normalised statistics are chosen before testi
 calibration is run as its own stage: comparing controls with controls across group
 sizes, reporting each method's false-positive rate with a Wilson interval and a KS
 test of p-value uniformity. Treat surrogate results as exploratory until a method
-passes this check.
+passes this check. Cells are drawn only from the testing controls, so the PCA axes
+are independent of the null being measured (`docs/DATA.md`).
+
+## Input space ([`experiments/05_compare_spaces.py`](../experiments/05_compare_spaces.py))
+
+Nothing after step 1 needs PCA: `distances` and `homology` take any point cloud, so
+the normalised gene matrix can be fed in directly. `05_compare_spaces` runs the same
+battery on the same cells and permutations in 30-PC space and in gene space, and
+reports graph connectivity, distance concentration, 15-NN agreement, null rate,
+sensitivity and runtime. The 30-PC space is primary (better distance contrast, faster,
+no null inflation); gene space is kept as a sensitivity baseline. Leading-H1 lifetimes
+are representation-dependent, so a loop readout must always name its space. Results
+and limits: `docs/UPDATE_REPORT.md` §4.
