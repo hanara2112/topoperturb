@@ -40,10 +40,47 @@ data. This is a limitation we state, not one we have worked around.
 (the eight K562 pilot knockdowns; for RPE1 the four shared knockdowns plus one
 strong positive control) and projects every cell onto **30 principal components**.
 
-PCA is fit **label-blind** with `fit="balanced"`: an equal number of cells per
-group define the axes, so one large group cannot dominate the representation. We
-fix this one representation deliberately rather than searching over PCA/graph
-settings for favourable p-values; `data.embed` exposes `n_pcs`, `fit` and
-`drop_genes` for anyone who wants to probe sensitivity. The control covariance
-spectrum saved alongside the clouds is what the synthetic benchmark (step 2a) uses
-to make its base Gaussian realistic.
+PCA is fit on a **held-out reference half of the controls** (`fit="reference"`).
+`data.reference_split` splits the control pool in two with a fixed seed: one half
+defines the axes and is then **retired from the analysis**, the other half is the
+only control material any test may draw. `data.testing_controls` is the single
+place that pool is defined, and `01_prepare_data` stores the mask in the clouds so
+steps 2b and 2c exclude exactly the cells the axes were fitted on.
+
+Why go further than fitting on all controls. Fitting on every control removes
+*perturbation* leakage but not the subtler kind: in a control-vs-control null the
+permuted cells are the same cells that defined the coordinates, so the null
+distribution is not independent of the representation being tested, and the
+false-positive rate it reports is not quite the one a fresh comparison would see.
+With a reserved reference half, nothing on either side of a comparison helped build
+the space. The cost is cells, and we can afford it: ~5.3k testing controls in K562
+and ~5.7k in RPE1 against draws of at most 300.
+
+Earlier defaults, kept only as sensitivity options: `fit="balanced"` was outright
+leakage-prone (with many small perturbation groups, equal-per-group sampling made
+the fit ~85–89% perturbation cells, and its 30-D subspace overlapped the
+controls-only one by only ~35%); `fit="controls"` and `fit="pooled"` sit between
+that and the reference split. We fix one primary representation deliberately rather
+than searching over PCA/graph settings for favourable p-values; `data.embed` exposes
+`n_pcs`, `fit` and `drop_genes` for anyone who wants to probe sensitivity, and
+`01_prepare_data --n-pcs` writes alternative representations to tagged files so a
+sensitivity run cannot overwrite the primary clouds. The control covariance
+spectrum saved alongside the clouds — computed on the **testing** controls, since
+those are the cells the tests actually see — is what the synthetic benchmark (step
+2a) uses to make its base Gaussian realistic.
+
+### Why 30 PCs, when they explain only ~15–21% of variance
+
+The low fraction is expected for sparse single-cell counts and is not a sign that
+structure was left behind: the control covariance spectrum flattens after roughly
+the tenth component. In K562 the eigenvalues run 2.60, 1.55, 0.80 (PC 5), 0.38
+(PC 10), 0.28 (PC 20), 0.25 (PC 30), 0.20 (PC 50) — PCs 20–50 are a near-flat
+noise floor, so the residual variance is spread thinly over hundreds of gene
+dimensions rather than concentrated in a few we are ignoring. Two consequences
+visible in the prepared clouds: the participation ratio grows almost linearly with
+the PC count (K562 10.8 → 15.0 → 24.4 at 20/30/50 PCs), i.e. extra components add
+near-isotropic noise rather than new structure; and the median perturbation
+centroid shift is essentially unchanged (K562 1.74 / 1.78 / 1.86; RPE1 2.98 / 3.00
+/ 3.05), i.e. the perturbation signal sits in the leading components and is already
+captured at 20. Thirty is therefore a point on a plateau rather than a tuned
+choice, and `--n-pcs 20` / `--n-pcs 50` exist to re-check that claim.

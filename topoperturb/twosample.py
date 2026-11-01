@@ -113,7 +113,9 @@ def surrogate_test(statistics, A, B, n=M_SURR, rng=None):
     for name, obs in observed.items():
         d = np.array(draws[name])
         p = (1 + (d >= obs).sum()) / (1 + n)
-        results[name] = (p, obs, float((obs - d.mean()) / d.std(ddof=1)))
+        spread = d.std(ddof=1)
+        z = float((obs - d.mean()) / spread) if spread > 0 else 0.0  # all surrogates equal
+        results[name] = (p, obs, z)
     return results
 
 

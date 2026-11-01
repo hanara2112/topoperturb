@@ -31,9 +31,13 @@ GROUPS = [(cl, g) for cl in CLOUDS for g in config.TARGETS[cl] + ["control_vs_co
 
 
 def sample(cell_line, group, draw):
-    """Draw a control and a perturbed cloud for one (group, draw); reproducible."""
-    Z, labels = CLOUDS[cell_line][0], CLOUDS[cell_line][1]
-    control_idx = np.where(labels == CONTROL)[0]
+    """Draw a control and a perturbed cloud for one (group, draw); reproducible.
+
+    Controls come only from the testing pool: the reference controls that defined
+    the PCA axes are excluded, so no cell both built and is judged in the space.
+    """
+    Z, labels, _rows, reference = CLOUDS[cell_line]
+    control_idx = data.testing_controls(labels, reference)
     rng = np.random.default_rng([SEED, 77, GROUPS.index((cell_line, group)), draw])
     if group == "control_vs_control":
         pick = rng.choice(control_idx, 2 * N, replace=False)

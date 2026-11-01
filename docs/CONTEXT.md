@@ -5,8 +5,9 @@ whole project and make decisions: data, statistics, methods, results, papers, an
 versions. Keep it current.
 
 - **Last updated:** 2026-11-01
-- **Repo state:** clean rewrite complete; experiments verified offline; **full-scale
-  runs not yet executed**; nothing committed yet.
+- **Repo state:** clean rewrite complete; experiments verified offline (7/7 method
+  checks); PCA now fit on controls only (leakage fix, see §4); **full-scale runs not
+  yet executed**; nothing committed yet.
 - **How to maintain:** when data, parameters, methods, results, or versions change,
   update the relevant section *and* add a dated line to the Changelog at the bottom.
   Numbers here must come from a real run — cite the file they came from.
@@ -45,10 +46,14 @@ archive/       earlier pipeline + recovered caches (NOT used by current code)
 
 ### Selected cells (from `01_prepare_data`, 30-PC clouds)
 
-| Cell line | cells | genes | controls | perturbations studied |
+| Cell line | cells | genes | controls (PCA reference / testing) | perturbations studied |
 |---|---|---|---|---|
-| K562 | 13,534 | 622 | 10,691 | 8 pilot KDs |
-| RPE1 | 13,899 | 383 | 11,485 | 4 shared KDs + 1 positive control |
+| K562 | 13,534 | 622 | 10,691 (5,346 / 5,345) | 8 pilot KDs |
+| RPE1 | 13,899 | 383 | 11,485 (5,742 / 5,743) | 4 shared KDs + 1 positive control |
+
+Half the controls are reserved to fit the PCA and never tested (§4); only the testing
+half is available to steps 2b/2c. `results/data_summary.csv` carries both counts
+(`n_cells`, `n_for_testing`).
 
 **K562 per-group cells** (`results/data_summary.csv`): non-targeting 10,691; NCBP2 765;
 CPSF3 575; ZMAT2 348; DLD 283; POLR2B 234; GFM1 230; POLRMT 208; RPL21 200.
@@ -61,13 +66,52 @@ pos. control `ENSG00000174243`.
 
 ## 4. Representation & control statistics
 
-- **PCA:** 30 PCs, `fit="balanced"` (equal cells/group define axes), label-blind, seed 42.
-- Source: `data/<line>/clouds.json` (regenerate via step 1).
+- **PCA:** 30 PCs, `fit="reference"`, seed 42, deterministic.
+- **Reference split (PCA independence).** `data.reference_split` reserves **half the
+  controls** to fit the axes and those cells are then excluded from every test;
+  `data.testing_controls` defines the pool the tests may draw, and the mask travels
+  with the clouds (`pca_reference`). K562: 5,346 reference / 5,345 testing controls.
+  RPE1: 5,742 / 5,743. Draws are at most 300 cells, so the testing pool is ample.
+- **Why not simply fit on all controls:** that removes perturbation leakage but
+  leaves the null dependent on the representation — in a control-vs-control test the
+  permuted cells are the cells that defined the coordinates, so its false-positive
+  rate is not the one a fresh comparison would face. With a reserved half, nothing on
+  either side of a comparison helped build the space. The split is identical across
+  PC counts (it depends only on labels and the seed), so representations are compared
+  on the same cells.
+- **Earlier defaults, now sensitivity options only:** `"balanced"` was leakage-prone
+  (~85–89% perturbation cells in the fit; its 30-D subspace overlapped the
+  controls-only one by ~35%); `"controls"`/`"pooled"` sit between that and
+  `"reference"`.
+- Source: `data/<line>/clouds.json`, alternates `clouds_{20,50}pc.json` (step 1).
+
+Primary representation (30 PCs; spectrum computed on the **testing** controls):
 
 | Cell line | top-2 PC var frac | participation ratio | median centroid shift | var explained, 30 PCs |
 |---|---|---|---|---|
-| K562 | 0.297 | 14.09 | 2.50 | 21.3% |
-| RPE1 | 0.349 | 11.54 | 3.27 | 31.5% |
+| K562 | 0.280 | 15.00 | 1.78 | 15.1% |
+| RPE1 | 0.330 | 12.49 | 3.00 | 20.9% |
+
+**Representation sensitivity (20 / 30 / 50 PCs).** Prepared via
+`01_prepare_data --n-pcs {20,50}` into tagged files:
+
+| Cell line | PCs | var explained | top-2 var frac | participation ratio | median centroid shift |
+|---|---|---|---|---|---|
+| K562 | 20 | 12.0% | 0.338 | 10.78 | 1.74 |
+| K562 | 30 | 15.1% | 0.280 | 15.00 | 1.78 |
+| K562 | 50 | 20.9% | 0.211 | 24.42 | 1.86 |
+| RPE1 | 20 | 16.3% | 0.416 | 8.31 | 2.98 |
+| RPE1 | 30 | 20.9% | 0.330 | 12.49 | 3.00 |
+| RPE1 | 50 | 28.9% | 0.238 | 21.94 | 3.05 |
+
+The modest variance fraction is a property of sparse scRNA counts, not lost signal:
+the control covariance spectrum flattens after ~PC 10 (K562 eigenvalues 2.60, 1.55,
+0.80 at PC 5, 0.38 at PC 10, 0.28 at PC 20, 0.25 at PC 30, 0.20 at PC 50), so the
+rest is thin, near-isotropic variance spread over hundreds of gene dimensions. Two
+readings of the table support that: participation ratio grows roughly linearly with
+the PC count (extra PCs add isotropic noise, not structure), while the median
+perturbation centroid shift barely moves (1.74→1.86 K562, 2.98→3.05 RPE1), so the
+perturbation signal is already captured by 20 PCs. 30 sits on a plateau.
 
 (The K562 control covariance spectrum is what the synthetic benchmark uses as its
 realistic base Gaussian.)
@@ -101,9 +145,16 @@ distance via `persim.wasserstein`. Distances scaled by mean off-diagonal so size
 **Numerical guards:** near-degenerate graphs/surrogates raise benign NumPy-2 FP flags;
 guarded with `np.errstate` + `nan_to_num`, with a finiteness check on PCA output.
 
-**Verification (`verify_methods.py`, independent references):** effective resistance vs
-`networkx.resistance_distance` → max error **1.1e-16**; energy distance matches its
-definition; diagram self-distance = 0; permutation null rejected **2/40 (~5%)**.
+**Verification (`verify_methods.py`, independent references; all 8 checks pass):**
+effective resistance vs `networkx.resistance_distance` → max error **1.1e-16**;
+diffusion distance vs a direct `D⁻¹A` transition-matrix computation → **corr = 1.000000**
+at t = 1/4/8 (the two forms differ by a global scale, which the mean-off-diagonal
+scaling divides out); both spectral distances symmetric, zero-diagonal, non-negative;
+a clean circle gives one dominant H1 loop (lifetime **1.32**); the PCA reference and
+testing controls partition the control pool with no overlap and `embed`'s axes match a
+PCA fitted directly on the reference rows; energy distance matches its definition;
+diagram distance zero to itself, symmetric, monotone in bar length; permutation null
+rejected **2/40 (~5%)**.
 
 ## 6. Experiments (what each produces)
 
@@ -117,11 +168,21 @@ definition; diagram self-distance = 0; permutation null rejected **2/40 (~5%)**.
 Synthetic conditions: null, translation, scaling, anisotropy, heavy_tails, partial_kd
 (mixture), ring, bimodal, ring_noise_{0.1,0.2,0.3,0.5}.
 
+Note on `04_calibration`: its draws reuse cells from one control pool, so they are not
+independent and the reported Wilson interval **understates** the true uncertainty — read
+it as a lower bound. It draws only from the testing controls, so the PCA axes are
+independent of the null being measured. `01_prepare_data --cache` accepts a
+`{cell_line}` placeholder so both lines can be prepared in one run (the cross-line
+summary needs that); `--n-pcs` on steps 1 and 2c selects an alternative representation
+and tags its outputs (`clouds_50pc.npz`, `calibration_50pc.csv`, …).
+
 ## 7. Results
 
 **Status: full-scale runs PENDING.** Only small verification/smoke runs executed so far.
 
-Observed in smoke runs (not final — low replicate counts):
+Observed in smoke runs (not final — low replicate counts, and these were run on the
+**old balanced-fit PCA**, so even as smoke signals they must be re-run on the
+controls-fit clouds before being read at all):
 - Synthetic: `diffusion_H1`/`effres_H1` detect the ring where `energy` does not; null and
   pure translation stay low for PH.
 - Real: `energy` rejects all knockdowns; some genes (e.g. RPL21, CPSF3, pos. control)
@@ -151,7 +212,10 @@ huggingface_hub (latest); networkx (verify-only). Pinned in `pyproject.toml`.
 
 ## 10. Open decisions / TODO
 
-- [ ] Run full-scale `02/03/04`; fill §7 with final numbers + figures.
+- [ ] Run full-scale `02/03/04` on the controls-fit clouds; fill §7 with final numbers
+      + figures (the old smoke observations do not carry over).
+- [ ] Report the `fit="balanced"` (and `drop_genes`) runs as an explicit representation
+      sensitivity check alongside the controls-fit primary analysis.
 - [ ] Fetch canonical data from Hugging Face (step 1 without `--cache`) and confirm
       clouds match the offline-cache clouds.
 - [ ] Decide whether to add a modest novel method (currently: referenced methods only).
@@ -164,3 +228,15 @@ huggingface_hub (latest); networkx (verify-only). Pinned in `pyproject.toml`.
 - **2026-11-01** — Clean rewrite: package + experiments; legacy moved to `archive/`;
   methods verified against references; docs (DATA/METHODS/CONTEXT) added. Full-scale
   runs pending.
+- **2026-11-01** — Audit + fixes. (1) **PCA default `balanced` → `controls`**: the
+  balanced fit was ~85–89% perturbation cells (controls 11% K562 / 17% RPE1) and its
+  30-D subspace overlapped the controls-only one by only ~35%, i.e. the axes were
+  partly defined by the cells under test (double dipping); clouds regenerated for both
+  lines, §4 stats and `results/data_summary.{csv,png}` updated. (2) `verify_methods.py`
+  extended from 4 to 7 checks (diffusion vs transition matrix, distance-matrix
+  properties, circle → one dominant H1; diagram check strengthened to symmetry +
+  monotonicity) — all pass. (3) `twosample.surrogate_test` guards the z-score against a
+  zero-variance surrogate spread. (4) Calibration's non-independent draws documented as
+  making its Wilson interval a lower bound. (5) `01_prepare_data --cache` takes a
+  `{cell_line}` placeholder so both lines (and thus the cross-line summary) come from
+  one run. Full-scale runs still pending; §7 smoke observations predate the PCA change.

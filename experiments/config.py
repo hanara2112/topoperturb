@@ -40,6 +40,11 @@ def data_source(cache):
     return f"local cache {cache}" if cache else "Hugging Face (pinned revision)"
 
 
-def cloud_path(cell_line):
-    """Where ``01_prepare_data`` writes the PCA clouds for a cell line."""
-    return DATA / cell_line / "clouds.npz"
+def cloud_path(cell_line, n_pcs=None):
+    """Where ``01_prepare_data`` writes the PCA clouds for a cell line.
+
+    The primary ``N_PCS`` representation keeps the plain name; other PC counts are
+    tagged, so a representation-sensitivity run never overwrites the primary clouds.
+    """
+    name = "clouds.npz" if n_pcs in (None, N_PCS) else f"clouds_{n_pcs}pc.npz"
+    return DATA / cell_line / name

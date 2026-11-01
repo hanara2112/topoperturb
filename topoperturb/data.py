@@ -156,14 +156,48 @@ def load_cache_npz(path, keep=None):
     return X[mask], labels[mask], list(genes)
 
 
-def embed(X, labels, n_pcs=30, fit="balanced", drop_genes=None, genes=None, seed=42):
+def reference_split(labels, frac=0.5, seed=42, min_testing=300):
+    """Reserve a disjoint subset of controls to fit the PCA on, and nothing else.
+
+    Fitting the axes on controls that later enter a test leaves the test's own null
+    distribution dependent on the representation being tested: the permuted labels
+    are shuffled within cells that helped define the coordinates. Holding out a
+    reference subset removes that dependence -- the axes come from control cells no
+    test ever sees, so a control-vs-control comparison is a genuine null.
+
+    Returns a boolean mask over ``labels`` (``True`` = reference, PCA-fit only).
+    """
+    control_idx = np.flatnonzero(labels == CONTROL)
+    n_reference = int(round(frac * len(control_idx)))
+    if len(control_idx) - n_reference < min_testing:
+        raise ValueError(f"Reserving {n_reference} of {len(control_idx)} controls for the PCA "
+                         f"leaves fewer than {min_testing} for testing")
+    rng = np.random.default_rng([seed, 101])
+    mask = np.zeros(len(labels), dtype=bool)
+    mask[rng.choice(control_idx, n_reference, replace=False)] = True
+    return mask
+
+
+def testing_controls(labels, reference):
+    """Indices of the controls the tests may draw from: those not reserved for the PCA."""
+    return np.flatnonzero((labels == CONTROL) & ~np.asarray(reference, dtype=bool))
+
+
+def embed(X, labels, n_pcs=30, fit="reference", reference=None, drop_genes=None,
+          genes=None, seed=42):
     """Project cells onto ``n_pcs`` principal components.
 
-    ``fit`` chooses which cells define the axes, kept deliberately label-blind:
-    ``"balanced"`` fits on an equal number of cells per group (so one large group
-    cannot dominate the axes), ``"controls"`` fits on controls only, ``"pooled"``
-    on every cell. ``drop_genes`` optionally removes target genes before PCA to
-    test whether a result survives without the direct knockdown signal.
+    ``fit`` chooses which cells define the axes. The default ``"reference"`` fits on
+    the held-out reference controls alone (see :func:`reference_split`), so neither
+    the perturbation under test nor the control cells it is compared against had any
+    hand in building the representation. ``"controls"`` fits on all controls -- no
+    perturbation leakage, but the test controls do shape their own axes, so it is a
+    sensitivity option rather than the primary choice. ``"pooled"`` fits on every
+    cell (controls dominate by count, so it is close to ``"controls"``);
+    ``"balanced"`` fits on an equal number of cells per group, which -- with many
+    small perturbation groups -- makes the fit mostly perturbation cells and is kept
+    only for sensitivity checks. ``drop_genes`` optionally removes target genes
+    before PCA to test whether a result survives without the direct knockdown signal.
     """
     rng = np.random.default_rng(seed)
     if drop_genes:
@@ -171,6 +205,10 @@ def embed(X, labels, n_pcs=30, fit="balanced", drop_genes=None, genes=None, seed
         X = X[:, feature]
     if fit == "pooled":
         fit_idx = np.arange(len(X))
+    elif fit == "reference":
+        if reference is None:
+            reference = reference_split(labels, seed=seed)
+        fit_idx = np.flatnonzero(reference)
     elif fit == "controls":
         fit_idx = np.flatnonzero(labels == CONTROL)
     elif fit == "balanced":
@@ -178,7 +216,7 @@ def embed(X, labels, n_pcs=30, fit="balanced", drop_genes=None, genes=None, seed
         n = min(len(g) for g in groups)
         fit_idx = np.sort(np.concatenate([rng.choice(g, n, replace=False) for g in groups]))
     else:
-        raise ValueError("fit must be 'balanced', 'controls' or 'pooled'")
+        raise ValueError("fit must be 'reference', 'controls', 'balanced' or 'pooled'")
     variable = X[fit_idx].var(axis=0) > 0        # drop constant genes so PCA is well posed
     pca = PCA(n_components=n_pcs, svd_solver="randomized", random_state=seed)
     # Randomized SVD on float32 raises benign floating-point flags under NumPy 2;
@@ -191,14 +229,16 @@ def embed(X, labels, n_pcs=30, fit="balanced", drop_genes=None, genes=None, seed
     return Z, pca
 
 
-def control_spectrum(Z, labels):
+def control_spectrum(Z, labels, reference=None):
     """Describe the control cloud: the summary a synthetic benchmark needs.
 
     Returns the control covariance eigenvalues, its participation ratio (an
     anisotropy measure), the fraction of variance in the top two PCs, and the
     median centroid shift of the perturbations -- a realistic translation size.
+    Pass ``reference`` to describe the *testing* controls only, which is what the
+    tests actually see (the PCA-fit controls are reserved and never compared).
     """
-    control = Z[labels == CONTROL]
+    control = Z[labels == CONTROL] if reference is None else Z[testing_controls(labels, reference)]
     cov = np.cov(control.T)
     eigenvalues = np.sort(np.linalg.eigvalsh(cov))[::-1]
     shifts = [np.linalg.norm(Z[labels == g].mean(0) - control.mean(0))
@@ -209,18 +249,25 @@ def control_spectrum(Z, labels):
             "median_centroid_shift": float(np.median(shifts)) if shifts else 0.0}
 
 
-def save_clouds(path, Z, labels, rows, meta):
-    """Write the PCA clouds and their provenance/summary side by side."""
+def save_clouds(path, Z, labels, rows, meta, reference=None):
+    """Write the PCA clouds and their provenance/summary side by side.
+
+    ``reference`` is the PCA-fit control mask, saved with the clouds so every
+    downstream step excludes exactly the cells the axes were fitted on.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, Z=Z, labels=labels, source_rows=rows)
+    if reference is None:
+        reference = np.zeros(len(Z), dtype=bool)
+    np.savez_compressed(path, Z=Z, labels=labels, source_rows=rows,
+                        pca_reference=np.asarray(reference, dtype=bool))
     path.with_suffix(".json").write_text(json.dumps(meta, indent=2) + "\n")
 
 
 def load_clouds(path):
-    """Load ``(Z, labels, source_rows), meta`` written by :func:`save_clouds`."""
+    """Load ``(Z, labels, source_rows, pca_reference), meta`` from :func:`save_clouds`."""
     path = Path(path)
     with np.load(path, allow_pickle=False) as z:
-        clouds = z["Z"], z["labels"].astype(str), z["source_rows"]
+        clouds = z["Z"], z["labels"].astype(str), z["source_rows"], z["pca_reference"]
     meta = json.loads(path.with_suffix(".json").read_text())
     return clouds, meta
